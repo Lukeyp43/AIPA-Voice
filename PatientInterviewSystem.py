@@ -164,6 +164,7 @@ class PatientInterviewSystem:
             ]
         }
 
+"""
 # Example usage
 def main():
     interview = PatientInterviewSystem()
@@ -189,3 +190,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
