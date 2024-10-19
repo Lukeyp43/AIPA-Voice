@@ -182,7 +182,7 @@ class TranscriptCollector:
 
 transcript_collector = TranscriptCollector()
 
-async def get_transcript(callback, is_speaking):
+async def get_transcript(callback, is_speaking, stop_flag):
     transcription_complete = asyncio.Event()
     transcription_end_time = None
     speech_end_time = None
@@ -249,8 +249,15 @@ async def get_transcript(callback, is_speaking):
             print("Closing Deepgram connection...")
             await dg_connection.finish()
 
+        while not (transcription_complete.is_set() or stop_flag.is_set()):
+            await asyncio.sleep(0.1)
+
     except Exception as e:
         print(f"Error in get_transcript: {str(e)}")
+        return None, None
+
+    if stop_flag.is_set():
+        print("Transcription stopped due to conversation end")
         return None, None
 
     if not transcription_end_time or not speech_end_time:
@@ -267,6 +274,7 @@ class ConversationManager:
         self.state = "IDLE"
         self.interrupt_detected = False
         self.sio = sio
+        self.stop_conversation_flag = asyncio.Event()
 
     def handle_interrupt(self):
         if self.state == "TALKING":
@@ -274,21 +282,35 @@ class ConversationManager:
             self.state = "LISTENING"
             self.interrupt_detected = True
 
+    def stop_all_processes(self):
+        self.stop_conversation_flag.set()
+        self.tts.stop_speaking()
+        self.state = "IDLE"
+        self.interrupt_detected = False
+
     async def main(self, sid):
         try:
             await self.tts.init_session()
+            self.stop_conversation_flag.clear()
             
             def handle_full_sentence(full_sentence):
                 self.transcription_response = full_sentence
                 if self.state == "TALKING":
                     self.handle_interrupt()
 
-            while True:
+            while not self.stop_conversation_flag.is_set():
                 print("Waiting for speech...")
                 self.state = "LISTENING"
                 await self.sio.emit('listening_status', {'isListening': True}, room=sid)
-                speech_end_time, transcription_end_time = await get_transcript(handle_full_sentence, lambda: self.state == "TALKING")
+                speech_end_time, transcription_end_time = await get_transcript(
+                    handle_full_sentence, 
+                    lambda: self.state == "TALKING",
+                    self.stop_conversation_flag
+                )
                 
+                if self.stop_conversation_flag.is_set():
+                    break
+
                 if speech_end_time is None or transcription_end_time is None:
                     print("Error in speech recognition. Retrying in 5 seconds...")
                     await asyncio.sleep(5)
@@ -317,7 +339,7 @@ class ConversationManager:
                 speak_task = asyncio.create_task(self.tts.speak(llm_response))
                 
                 while not speak_task.done():
-                    if self.interrupt_detected:
+                    if self.interrupt_detected or self.stop_conversation_flag.is_set():
                         print("Interruption detected, stopping TTS...")
                         self.tts.stop_speaking()
                         break
@@ -331,6 +353,7 @@ class ConversationManager:
             print("Conversation ended.")
         finally:
             await self.tts.close_session()
+            await self.sio.emit('listening_status', {'isListening': False}, room=sid)
 
 # Create a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -364,9 +387,11 @@ async def start_conversation(sid):
 
 @sio.event
 async def stop_conversation(sid):
+    global conversation_manager
     if conversation_manager:
-        conversation_manager.tts.stop_speaking()
-        conversation_manager.state = 'IDLE'
+        conversation_manager.stop_all_processes()
+        await sio.emit('listening_status', {'isListening': False}, room=sid)
+        conversation_manager = None  # Reset the conversation manager
 
 @sio.event
 async def toggle_listening(sid, data):
@@ -379,7 +404,7 @@ async def toggle_listening(sid, data):
 
 if __name__ == "__main__":
     import uvicorn
-    import os
     
-    port = int(os.getenv("PORT", 5000))
+    # Remove the dynamic port assignment and set it to 5001
+    port = 5001
     uvicorn.run(sio_app, host="0.0.0.0", port=port)
