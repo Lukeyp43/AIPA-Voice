@@ -5,7 +5,14 @@ import subprocess
 import requests
 import time
 import os
-import aiohttp  # Add this line
+import aiohttp
+import socketio
+# Remove the eventlet import as we're not using it anymore
+# import eventlet
+
+# Add these new imports
+from fastapi import FastAPI
+from starlette.middleware.cors import CORSMiddleware
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
@@ -253,12 +260,13 @@ async def get_transcript(callback, is_speaking):
     return speech_end_time, transcription_end_time
 
 class ConversationManager:
-    def __init__(self):
+    def __init__(self, sio):
         self.transcription_response = ""
         self.llm = LanguageModelProcessor()
         self.tts = TextToSpeech()
         self.state = "IDLE"
         self.interrupt_detected = False
+        self.sio = sio
 
     def handle_interrupt(self):
         if self.state == "TALKING":
@@ -266,7 +274,7 @@ class ConversationManager:
             self.state = "LISTENING"
             self.interrupt_detected = True
 
-    async def main(self):
+    async def main(self, sid):
         try:
             await self.tts.init_session()
             
@@ -278,6 +286,7 @@ class ConversationManager:
             while True:
                 print("Waiting for speech...")
                 self.state = "LISTENING"
+                await self.sio.emit('listening_status', {'isListening': True}, room=sid)
                 speech_end_time, transcription_end_time = await get_transcript(handle_full_sentence, lambda: self.state == "TALKING")
                 
                 if speech_end_time is None or transcription_end_time is None:
@@ -289,12 +298,14 @@ class ConversationManager:
                     print("No transcription received. Retrying...")
                     continue
 
-                print(f"Transcription received: {self.transcription_response}")  # Debug print
+                print(f"Transcription received: {self.transcription_response}")
+                await self.sio.emit('transcription', {'text': self.transcription_response}, room=sid)
 
                 if "goodbye" in self.transcription_response.lower():
                     break
                 
                 self.state = "PROCESSING"
+                await self.sio.emit('listening_status', {'isListening': False}, room=sid)
                 llm_response = self.llm.process(self.transcription_response)
                 
                 if not llm_response:
@@ -302,6 +313,7 @@ class ConversationManager:
                     continue
 
                 self.state = "TALKING"
+                await self.sio.emit('ai_response', {'text': llm_response}, room=sid)
                 speak_task = asyncio.create_task(self.tts.speak(llm_response))
                 
                 while not speak_task.done():
@@ -320,6 +332,54 @@ class ConversationManager:
         finally:
             await self.tts.close_session()
 
+# Create a Socket.IO server
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+sio_app = socketio.ASGIApp(sio, app)
+
+# Initialize the ConversationManager
+conversation_manager = None
+
+@sio.event
+async def connect(sid, environ):
+    print('Client connected:', sid)
+
+@sio.event
+async def disconnect(sid):
+    print('Client disconnected:', sid)
+
+@sio.event
+async def start_conversation(sid):
+    global conversation_manager
+    if conversation_manager is None:
+        conversation_manager = ConversationManager(sio)
+    await sio.start_background_task(conversation_manager.main, sid)
+
+@sio.event
+async def stop_conversation(sid):
+    if conversation_manager:
+        conversation_manager.tts.stop_speaking()
+        conversation_manager.state = 'IDLE'
+
+@sio.event
+async def toggle_listening(sid, data):
+    if conversation_manager:
+        if data['isListening']:
+            conversation_manager.state = 'LISTENING'
+        else:
+            conversation_manager.state = 'IDLE'
+        await sio.emit('listening_status', {'isListening': data['isListening']}, room=sid)
+
 if __name__ == "__main__":
-    manager = ConversationManager()
-    asyncio.run(manager.main())
+    import uvicorn
+    import os
+    
+    port = int(os.getenv("PORT", 5000))
+    uvicorn.run(sio_app, host="0.0.0.0", port=port)
