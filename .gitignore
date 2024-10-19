@@ -1,0 +1,15 @@
+# Virtual environment
+myenv/
+
+# Environment variables
+.env
+
+# Private keys
+*.key
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# OS generated files
+.DS_Store

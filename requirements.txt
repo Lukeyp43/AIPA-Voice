@@ -1,0 +1,9 @@
+aiohttp==3.9.3
+deepgram_sdk==3.5.1
+groq==0.11.0
+langchain==0.3.4
+langchain_core==0.3.12
+langchain_groq==0.2.0
+python-dotenv==1.0.1
+Requests==2.32.3
+tenacity==8.2.3
