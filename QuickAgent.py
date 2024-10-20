@@ -274,6 +274,7 @@ class ConversationManager:
         self.state = "IDLE"
         self.sio = sio
         self.stop_conversation_flag = asyncio.Event()
+        self.end_phrases = ["have a nice day", "goodbye", "farewell"]
 
     def stop_all_processes(self):
         self.stop_conversation_flag.set()
@@ -294,7 +295,7 @@ class ConversationManager:
                 await self.sio.emit('listening_status', {'isListening': True}, room=sid)
                 speech_end_time, transcription_end_time = await get_transcript(
                     handle_full_sentence, 
-                    lambda: False,  # We're always listening when the conversation is active
+                    lambda: False,
                     self.stop_conversation_flag
                 )
                 
@@ -312,9 +313,6 @@ class ConversationManager:
                 print(f"Transcription received: {self.transcription_response}")
                 await self.sio.emit('transcription', {'text': self.transcription_response}, room=sid)
 
-                if "goodbye" in self.transcription_response.lower():
-                    break
-                
                 self.state = "PROCESSING"
                 llm_response = self.llm.process(self.transcription_response)
                 
@@ -330,10 +328,16 @@ class ConversationManager:
                 self.state = "LISTENING"
                 self.transcription_response = ""
 
+                # Check if the AI's response contains an end phrase
+                if any(phrase in llm_response.lower() for phrase in self.end_phrases):
+                    print("AI assistant ended the conversation.")
+                    break
+
             print("Conversation ended.")
         finally:
             await self.tts.close_session()
             await self.sio.emit('listening_status', {'isListening': False}, room=sid)
+            await self.sio.emit('conversation_ended', room=sid)
 
 # Create a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
@@ -371,6 +375,7 @@ async def stop_conversation(sid):
     if conversation_manager:
         conversation_manager.stop_all_processes()
         await sio.emit('listening_status', {'isListening': False}, room=sid)
+        await sio.emit('conversation_ended', room=sid)
         conversation_manager = None  # Reset the conversation manager
 
 if __name__ == "__main__":
