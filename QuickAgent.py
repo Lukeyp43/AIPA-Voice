@@ -272,21 +272,13 @@ class ConversationManager:
         self.llm = LanguageModelProcessor()
         self.tts = TextToSpeech()
         self.state = "IDLE"
-        self.interrupt_detected = False
         self.sio = sio
         self.stop_conversation_flag = asyncio.Event()
-
-    def handle_interrupt(self):
-        if self.state == "TALKING":
-            self.tts.stop_speaking()
-            self.state = "LISTENING"
-            self.interrupt_detected = True
 
     def stop_all_processes(self):
         self.stop_conversation_flag.set()
         self.tts.stop_speaking()
         self.state = "IDLE"
-        self.interrupt_detected = False
 
     async def main(self, sid):
         try:
@@ -295,8 +287,6 @@ class ConversationManager:
             
             def handle_full_sentence(full_sentence):
                 self.transcription_response = full_sentence
-                if self.state == "TALKING":
-                    self.handle_interrupt()
 
             while not self.stop_conversation_flag.is_set():
                 print("Waiting for speech...")
@@ -304,7 +294,7 @@ class ConversationManager:
                 await self.sio.emit('listening_status', {'isListening': True}, room=sid)
                 speech_end_time, transcription_end_time = await get_transcript(
                     handle_full_sentence, 
-                    lambda: self.state == "TALKING",
+                    lambda: False,  # We're always listening when the conversation is active
                     self.stop_conversation_flag
                 )
                 
@@ -312,8 +302,7 @@ class ConversationManager:
                     break
 
                 if speech_end_time is None or transcription_end_time is None:
-                    print("Error in speech recognition. Retrying in 5 seconds...")
-                    await asyncio.sleep(5)
+                    print("Error in speech recognition. Retrying...")
                     continue
 
                 if not self.transcription_response:
@@ -327,7 +316,6 @@ class ConversationManager:
                     break
                 
                 self.state = "PROCESSING"
-                await self.sio.emit('listening_status', {'isListening': False}, room=sid)
                 llm_response = self.llm.process(self.transcription_response)
                 
                 if not llm_response:
@@ -338,16 +326,8 @@ class ConversationManager:
                 await self.sio.emit('ai_response', {'text': llm_response}, room=sid)
                 speak_task = asyncio.create_task(self.tts.speak(llm_response))
                 
-                while not speak_task.done():
-                    if self.interrupt_detected or self.stop_conversation_flag.is_set():
-                        print("Interruption detected, stopping TTS...")
-                        self.tts.stop_speaking()
-                        break
-                    await asyncio.sleep(0.1)
-                
                 await speak_task
-                self.state = "IDLE"
-                self.interrupt_detected = False
+                self.state = "LISTENING"
                 self.transcription_response = ""
 
             print("Conversation ended.")
@@ -392,15 +372,6 @@ async def stop_conversation(sid):
         conversation_manager.stop_all_processes()
         await sio.emit('listening_status', {'isListening': False}, room=sid)
         conversation_manager = None  # Reset the conversation manager
-
-@sio.event
-async def toggle_listening(sid, data):
-    if conversation_manager:
-        if data['isListening']:
-            conversation_manager.state = 'LISTENING'
-        else:
-            conversation_manager.state = 'IDLE'
-        await sio.emit('listening_status', {'isListening': data['isListening']}, room=sid)
 
 if __name__ == "__main__":
     import uvicorn
