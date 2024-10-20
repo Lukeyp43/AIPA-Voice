@@ -278,7 +278,7 @@ class ConversationManager:
         self.sio = sio
         self.stop_conversation_flag = asyncio.Event()
         self.end_phrases = ["have a nice day", "goodbye", "farewell"]
-        self.conversation_transcript = []  # Store both AI and user responses
+        self.summarizer = ConversationSummarizer()  # Initialize the summarizer
 
     def stop_all_processes(self):
         self.stop_conversation_flag.set()
@@ -289,13 +289,13 @@ class ConversationManager:
         try:
             await self.tts.init_session()
             self.stop_conversation_flag.clear()
-            self.conversation_transcript = []  # Clear previous conversation
+            self.summarizer.clear_transcript()  # Clear any previous transcript
             
             # Start the conversation with an AI greeting
             initial_greeting = "Hello, welcome to our clinic my name is Miss PA. What is your name?"
             await self.sio.emit('ai_response', {'text': initial_greeting}, room=sid)
             await self.tts.speak(initial_greeting)
-            self.conversation_transcript.append(("AI Assistant Question:", initial_greeting))
+            self.summarizer.add_to_transcript("AI Assistant", initial_greeting)
             
             def handle_full_sentence(full_sentence):
                 self.transcription_response = full_sentence
@@ -324,8 +324,8 @@ class ConversationManager:
                 print(f"Transcription received: {self.transcription_response}")
                 await self.sio.emit('transcription', {'text': self.transcription_response}, room=sid)
 
-                # Add the user's response to the transcript
-                self.conversation_transcript.append(("Patient's Response:", self.transcription_response))
+                # Add patient's response to summarizer
+                self.summarizer.add_to_transcript("Patient", self.transcription_response)
 
                 self.state = "PROCESSING"
                 llm_response = self.llm.process(self.transcription_response)
@@ -338,8 +338,8 @@ class ConversationManager:
                 await self.sio.emit('ai_response', {'text': llm_response}, room=sid)
                 speak_task = asyncio.create_task(self.tts.speak(llm_response))
                 
-                # Add the AI's response to the transcript
-                self.conversation_transcript.append(("AI Assistant Question:", llm_response))
+                # Add AI's response to summarizer
+                self.summarizer.add_to_transcript("AI Assistant", llm_response)
                 
                 await speak_task
                 self.state = "LISTENING"
@@ -352,22 +352,86 @@ class ConversationManager:
 
             print("Conversation ended.")
             
-            # Print the entire conversation transcript
-            print("\nConversation Transcript:")
-            for speaker, text in self.conversation_transcript:
-                print(f"{speaker} {text}")
+            # # Print the entire conversation transcript
+            # print("\nConversation Transcript:")
+            # for speaker, text in self.conversation_transcript:
+            #     print(f"{speaker} {text}")
             
-            # Print combined responses (only patient's responses)
-            patient_responses = [text for speaker, text in self.conversation_transcript if speaker == "Patient's Response:"]
-            combined_responses = " ".join(patient_responses)
-            print("\nCombined Patient Responses:")
-            print(combined_responses)
+            # Generate and print summary at the end of conversation
+            print("\nGenerating conversation summary...")
+            summary = self.summarizer.summarize_conversation()
+            print("\nConversation Summary:")
+            print(summary)
+            
+            # Send summary to client
+            await self.sio.emit('conversation_summary', {'summary': summary}, room=sid)
 
         finally:
             await self.tts.close_session()
             await self.sio.emit('listening_status', {'isListening': False}, room=sid)
             await self.sio.emit('conversation_ended', room=sid)
 
+from groq import Groq
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+class ConversationSummarizer:
+    def __init__(self):
+        self.client = Groq(
+            api_key=os.environ.get("GROQ_API_KEY"),
+        )
+        self.conversation_transcript = []
+
+    def add_to_transcript(self, role, content):
+        """Add a new conversation entry to the transcript"""
+        self.conversation_transcript.append((role, content))
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    def summarize_conversation(self):
+        """
+        Summarize the conversation with retry logic for API calls.
+        Returns the generated summary as a string.
+        """
+        # Format the conversation text with clear separation between speakers
+        conversation_text = "\n".join([
+            f"{role}:\n{content}\n" 
+            for role, content in self.conversation_transcript
+        ])
+
+        prompt = f"""Please analyze and summarize this medical conversation, including:
+1. Patient's main concerns or symptoms
+2. Key information provided by the patient
+3. Important questions asked by the AI assistant
+4. Any follow-up actions or recommendations discussed
+
+Conversation:
+{conversation_text}
+
+Summary:"""
+
+        try:
+            chat_completion = self.client.chat.completions.create(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    }
+                ],
+                model="llama3-8b-8192",
+                temperature=0.7,  # Add some variability while keeping it focused
+                max_tokens=500    # Ensure we get a reasonably detailed summary
+            )
+
+            summary = chat_completion.choices[0].message.content
+            return summary.strip()
+
+        except Exception as e:
+            print(f"Error generating summary: {str(e)}")
+            return "Error: Unable to generate conversation summary"
+
+    def clear_transcript(self):
+        """Clear the conversation transcript"""
+        self.conversation_transcript = []
+ 
 # Create a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 app = FastAPI()
