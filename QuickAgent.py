@@ -395,11 +395,30 @@ class ConversationSummarizer:
             for role, content in self.conversation_transcript
         ])
 
-        prompt = f"""Please analyze and summarize this medical conversation, including:
-1. Patient's main concerns or symptoms
-2. Key information provided by the patient
-3. Important questions asked by the AI assistant
-4. Any follow-up actions or recommendations discussed
+        prompt = f"""Analyze and summarize this medical conversation. Make sure to not put any * in the summary just plain text. Structure the summary as follows:
+
+1. Patient Information:
+   - Name
+   - Primary concern
+
+2. Symptom Details:
+   - Description of symptoms
+   - Onset and duration
+   - Factors affecting symptoms (worsening or alleviating)
+
+3. Medical History:
+   - Relevant past conditions
+   - Current medications
+
+4. Key Points from AI Assistant's Questions:
+   - Important follow-up questions asked
+   - Significant information obtained
+
+5. Next Steps:
+   - Any immediate recommendations provided
+   - Mention that the patient will see a doctor shortly
+
+Format the summary with clear numbering and bullet points. Be concise but thorough.
 
 Conversation:
 {conversation_text}
