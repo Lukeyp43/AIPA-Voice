@@ -45,6 +45,10 @@ import time
 from tenacity import retry, stop_after_attempt, wait_exponential
 from datetime import datetime
 from fpdf import FPDF
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 
 class LanguageModelProcessor:
     def __init__(self):
@@ -356,13 +360,17 @@ class ConversationManager:
             
             # Generate and print summary at the end of conversation
             print("\nGenerating conversation summary...")
-            summary, pdf_path = self.summarizer.summarize_conversation()
+            summary, pdf_path, email_sent = self.summarizer.summarize_conversation(recipient_email="lukepettit10@gmail.com") 
             print("\nConversation Summary:")
             print(summary)
             print(f"\nPDF summary saved at: {pdf_path}")
+            if email_sent:
+                print("PDF sent via email successfully")
+            else:
+                print("Failed to send PDF via email")
             
             # Send summary to client
-            await self.sio.emit('conversation_summary', {'summary': summary, 'pdf_path': pdf_path}, room=sid)
+            await self.sio.emit('conversation_summary', {'summary': summary, 'pdf_path': pdf_path, 'email_sent': email_sent}, room=sid)
 
         finally:
             await self.tts.close_session()
@@ -384,7 +392,7 @@ class ConversationSummarizer:
         self.conversation_transcript.append((role, content))
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    def summarize_conversation(self):
+    def summarize_conversation(self, recipient_email=None):
         """
         Summarize the conversation with retry logic for API calls.
         Returns the generated summary as a string and the path to the PDF file.
@@ -440,13 +448,19 @@ Summary:"""
 
             summary = chat_completion.choices[0].message.content.strip()
             pdf_path = self.generate_pdf(summary)
-            return summary, pdf_path
+            
+            if recipient_email:
+                email_sent = self.send_pdf_email(pdf_path, recipient_email)
+            else:
+                email_sent = False
+
+            return summary, pdf_path, email_sent
 
         except Exception as e:
             print(f"Error generating summary: {str(e)}")
             error_summary = "Error: Unable to generate conversation summary"
             pdf_path = self.generate_pdf(error_summary)
-            return error_summary, pdf_path
+            return error_summary, pdf_path, False
 
     def clear_transcript(self):
         """Clear the conversation transcript"""
@@ -479,6 +493,36 @@ Summary:"""
         pdf.output(filename)
         print(f"PDF summary generated: {filename}")
         return filename
+
+    def send_pdf_email(self, pdf_path, recipient_email):
+        sender_email = os.getenv("SENDER_EMAIL")
+        sender_password = os.getenv("SENDER_PASSWORD")
+        smtp_server = os.getenv("SMTP_SERVER")
+        smtp_port = int(os.getenv("SMTP_PORT"))
+
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = recipient_email
+        msg['Subject'] = "Conversation Summary PDF"
+
+        body = "Please find attached the conversation summary PDF."
+        msg.attach(MIMEText(body, 'plain'))
+
+        with open(pdf_path, "rb") as file:
+            part = MIMEApplication(file.read(), Name=os.path.basename(pdf_path))
+        part['Content-Disposition'] = f'attachment; filename="{os.path.basename(pdf_path)}"'
+        msg.attach(part)
+
+        try:
+            with smtplib.SMTP(smtp_server, smtp_port) as server:
+                server.starttls()
+                server.login(sender_email, sender_password)
+                server.send_message(msg)
+            print(f"PDF sent successfully to {recipient_email}")
+            return True
+        except Exception as e:
+            print(f"Error sending email: {str(e)}")
+            return False
 
 # Create a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
