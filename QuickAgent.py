@@ -275,6 +275,7 @@ class ConversationManager:
         self.sio = sio
         self.stop_conversation_flag = asyncio.Event()
         self.end_phrases = ["have a nice day", "goodbye", "farewell"]
+        self.user_responses = []  # New array to store user responses
 
     def stop_all_processes(self):
         self.stop_conversation_flag.set()
@@ -285,6 +286,7 @@ class ConversationManager:
         try:
             await self.tts.init_session()
             self.stop_conversation_flag.clear()
+            self.user_responses = []  # Clear previous responses
             
             def handle_full_sentence(full_sentence):
                 self.transcription_response = full_sentence
@@ -313,6 +315,9 @@ class ConversationManager:
                 print(f"Transcription received: {self.transcription_response}")
                 await self.sio.emit('transcription', {'text': self.transcription_response}, room=sid)
 
+                # Add the user's response to the array
+                self.user_responses.append(self.transcription_response)
+
                 self.state = "PROCESSING"
                 llm_response = self.llm.process(self.transcription_response)
                 
@@ -334,6 +339,17 @@ class ConversationManager:
                     break
 
             print("Conversation ended.")
+            
+            # Print all user responses
+            print("\nUser Responses:")
+            for i, response in enumerate(self.user_responses):
+                print(f"Response {i}: {response}")
+            
+            # Print combined responses
+            combined_responses = " ".join(self.user_responses)
+            print("\nCombined User Responses:")
+            print(combined_responses)
+
         finally:
             await self.tts.close_session()
             await self.sio.emit('listening_status', {'isListening': False}, room=sid)
