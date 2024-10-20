@@ -43,6 +43,8 @@ from groq import InternalServerError  # Add this line
 
 import time
 from tenacity import retry, stop_after_attempt, wait_exponential
+from datetime import datetime
+from fpdf import FPDF
 
 class LanguageModelProcessor:
     def __init__(self):
@@ -352,19 +354,15 @@ class ConversationManager:
 
             print("Conversation ended.")
             
-            # # Print the entire conversation transcript
-            # print("\nConversation Transcript:")
-            # for speaker, text in self.conversation_transcript:
-            #     print(f"{speaker} {text}")
-            
             # Generate and print summary at the end of conversation
             print("\nGenerating conversation summary...")
-            summary = self.summarizer.summarize_conversation()
+            summary, pdf_path = self.summarizer.summarize_conversation()
             print("\nConversation Summary:")
             print(summary)
+            print(f"\nPDF summary saved at: {pdf_path}")
             
             # Send summary to client
-            await self.sio.emit('conversation_summary', {'summary': summary}, room=sid)
+            await self.sio.emit('conversation_summary', {'summary': summary, 'pdf_path': pdf_path}, room=sid)
 
         finally:
             await self.tts.close_session()
@@ -389,7 +387,7 @@ class ConversationSummarizer:
     def summarize_conversation(self):
         """
         Summarize the conversation with retry logic for API calls.
-        Returns the generated summary as a string.
+        Returns the generated summary as a string and the path to the PDF file.
         """
         # Format the conversation text with clear separation between speakers
         conversation_text = "\n".join([
@@ -421,17 +419,48 @@ Summary:"""
                 max_tokens=500    # Ensure we get a reasonably detailed summary
             )
 
-            summary = chat_completion.choices[0].message.content
-            return summary.strip()
+            summary = chat_completion.choices[0].message.content.strip()
+            pdf_path = self.generate_pdf(summary)
+            return summary, pdf_path
 
         except Exception as e:
             print(f"Error generating summary: {str(e)}")
-            return "Error: Unable to generate conversation summary"
+            error_summary = "Error: Unable to generate conversation summary"
+            pdf_path = self.generate_pdf(error_summary)
+            return error_summary, pdf_path
 
     def clear_transcript(self):
         """Clear the conversation transcript"""
         self.conversation_transcript = []
- 
+
+    def generate_pdf(self, summary):
+        """Generate a PDF with the conversation summary"""
+        # Create a directory for summaries if it doesn't exist
+        summary_dir = "conversation_summaries"
+        os.makedirs(summary_dir, exist_ok=True)
+
+        # Generate a unique filename based on the current timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join(summary_dir, f"conversation_summary_{timestamp}.pdf")
+
+        # Create PDF
+        pdf = FPDF()
+        pdf.add_page()
+
+        # Add title
+        pdf.set_font("Arial", 'B', 16)
+        pdf.cell(0, 10, "Conversation Summary", 0, 1, 'C')
+        pdf.ln(10)
+
+        # Add summary content
+        pdf.set_font("Arial", '', 12)
+        pdf.multi_cell(0, 10, summary)
+
+        # Save the PDF
+        pdf.output(filename)
+        print(f"PDF summary generated: {filename}")
+        return filename
+
 # Create a Socket.IO server
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 app = FastAPI()
@@ -477,3 +506,4 @@ if __name__ == "__main__":
     # Remove the dynamic port assignment and set it to 5001
     port = 5001
     uvicorn.run(sio_app, host="0.0.0.0", port=port)
+

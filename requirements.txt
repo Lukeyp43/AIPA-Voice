@@ -10,3 +10,4 @@ tenacity==8.2.3
 uvicorn==0.27.1
 python-socketio==5.11.1
 fastapi==0.109.2
+fpdf2==2.7.8
