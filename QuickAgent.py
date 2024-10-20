@@ -52,6 +52,9 @@ class LanguageModelProcessor:
         with open('system_prompt.txt', 'r') as file:
             system_prompt = file.read().strip()
         
+        # Add instruction to not assume responses are cut off
+        system_prompt += "\nIMPORTANT: Do not assume user responses are cut off or incomplete. Respond to what is given without asking for completion."
+
         self.prompt = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(system_prompt),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -275,7 +278,7 @@ class ConversationManager:
         self.sio = sio
         self.stop_conversation_flag = asyncio.Event()
         self.end_phrases = ["have a nice day", "goodbye", "farewell"]
-        self.user_responses = []  # New array to store user responses
+        self.conversation_transcript = []  # Store both AI and user responses
 
     def stop_all_processes(self):
         self.stop_conversation_flag.set()
@@ -286,7 +289,13 @@ class ConversationManager:
         try:
             await self.tts.init_session()
             self.stop_conversation_flag.clear()
-            self.user_responses = []  # Clear previous responses
+            self.conversation_transcript = []  # Clear previous conversation
+            
+            # Start the conversation with an AI greeting
+            initial_greeting = "Hello, welcome to our clinic my name is Miss PA. What is your name?"
+            await self.sio.emit('ai_response', {'text': initial_greeting}, room=sid)
+            await self.tts.speak(initial_greeting)
+            self.conversation_transcript.append(("AI Assistant Question:", initial_greeting))
             
             def handle_full_sentence(full_sentence):
                 self.transcription_response = full_sentence
@@ -315,8 +324,8 @@ class ConversationManager:
                 print(f"Transcription received: {self.transcription_response}")
                 await self.sio.emit('transcription', {'text': self.transcription_response}, room=sid)
 
-                # Add the user's response to the array
-                self.user_responses.append(self.transcription_response)
+                # Add the user's response to the transcript
+                self.conversation_transcript.append(("Patient's Response:", self.transcription_response))
 
                 self.state = "PROCESSING"
                 llm_response = self.llm.process(self.transcription_response)
@@ -329,6 +338,9 @@ class ConversationManager:
                 await self.sio.emit('ai_response', {'text': llm_response}, room=sid)
                 speak_task = asyncio.create_task(self.tts.speak(llm_response))
                 
+                # Add the AI's response to the transcript
+                self.conversation_transcript.append(("AI Assistant Question:", llm_response))
+                
                 await speak_task
                 self.state = "LISTENING"
                 self.transcription_response = ""
@@ -340,14 +352,15 @@ class ConversationManager:
 
             print("Conversation ended.")
             
-            # Print all user responses
-            print("\nUser Responses:")
-            for i, response in enumerate(self.user_responses):
-                print(f"Response {i}: {response}")
+            # Print the entire conversation transcript
+            print("\nConversation Transcript:")
+            for speaker, text in self.conversation_transcript:
+                print(f"{speaker} {text}")
             
-            # Print combined responses
-            combined_responses = " ".join(self.user_responses)
-            print("\nCombined User Responses:")
+            # Print combined responses (only patient's responses)
+            patient_responses = [text for speaker, text in self.conversation_transcript if speaker == "Patient's Response:"]
+            combined_responses = " ".join(patient_responses)
+            print("\nCombined Patient Responses:")
             print(combined_responses)
 
         finally:
