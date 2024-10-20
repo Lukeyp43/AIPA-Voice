@@ -46,7 +46,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 class LanguageModelProcessor:
     def __init__(self):
-        self.llm = ChatGroq(temperature=0, model_name="llama-3.1-70b-versatile", groq_api_key=os.getenv("GROQ_API_KEY"))
+        self.llm = ChatGroq(temperature=0.5, model_name="llama-3.1-70b-versatile", groq_api_key=os.getenv("GROQ_API_KEY"))
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
         with open('system_prompt.txt', 'r') as file:
